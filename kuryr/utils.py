@@ -11,6 +11,7 @@
 # under the License.
 
 from flask import Flask, jsonify
+from neutronclient.common.exceptions import NeutronClientException
 from werkzeug.exceptions import default_exceptions
 from werkzeug.exceptions import HTTPException
 
@@ -32,8 +33,9 @@ def make_json_app(import_name, **kwargs):
     """
     def make_json_error(ex):
         response = jsonify({"Err": str(ex)})
-        response.status_code = (ex.code
-                                if isinstance(ex, HTTPException)
+        response.status_code = (ex.code if isinstance(ex, HTTPException)
+                                else ex.status_code
+                                if isinstance(ex, NeutronClientException)
                                 else 500)
         content_type = 'application/vnd.docker.plugins.v1+json; charset=utf-8'
         response.headers['Content-Type'] = content_type
@@ -45,3 +47,24 @@ def make_json_app(import_name, **kwargs):
         app.error_handler_spec[None][code] = make_json_error
 
     return app
+
+
+class KuryrException(Exception):
+    """Default Kuryr exception"""
+
+    def __init__(self, msg):
+        """
+        :param msg: the message for the cause of the exception
+        """
+        self.msg = msg
+
+    def __repr__(self):
+        return repr(self.msg)
+
+
+class DuplicatedResourceException(KuryrException):
+    """Exception represents there're multiple resources for the ID.
+
+    This exception is thrown when you query the Neutron resouce associated with
+    the ID and you get multiple resources.
+    """
