@@ -50,7 +50,6 @@ class TestKuryr(base.TestCase):
 
     @data(('/Plugin.Activate', SCHEMA['PLUGIN_ACTIVATE']),
         ('/NetworkDriver.EndpointOperInfo', SCHEMA['ENDPOINT_OPER_INFO']),
-        ('/NetworkDriver.DeleteEndpoint', SCHEMA['SUCCESS']),
         ('/NetworkDriver.Join', SCHEMA['JOIN']),
         ('/NetworkDriver.Leave', SCHEMA['SUCCESS']))
     @unpack
@@ -97,40 +96,6 @@ class TestKuryr(base.TestCase):
         decoded_json = jsonutils.loads(response.data)
         self.assertEqual(SCHEMA['SUCCESS'], decoded_json)
 
-    def test_network_driver_delete_network(self):
-        docker_network_id = hashlib.sha256(
-            str(random.getrandbits(256))).hexdigest()
-        fake_neutron_network_id = "4e8e5957-649f-477b-9e5b-f1f75b21c03c"
-        fake_list_response = {
-            "networks": [{
-                "status": "ACTIVE",
-                "subnets": [],
-                "name": docker_network_id,
-                "admin_state_up": True,
-                "tenant_id": "9bacb3c5d39d41a79512987f338cf177",
-                "router:external": False,
-                "segments": [],
-                "shared": False,
-                "id": fake_neutron_network_id
-            }]
-        }
-
-        self.mox.StubOutWithMock(app.neutron, 'list_networks')
-        app.neutron.list_networks(
-            name=docker_network_id).AndReturn(fake_list_response)
-        self.mox.StubOutWithMock(app.neutron, 'delete_network')
-        app.neutron.delete_network(fake_neutron_network_id).AndReturn(None)
-        self.mox.ReplayAll()
-
-        data = {'NetworkID': docker_network_id}
-        response = self.app.post('/NetworkDriver.DeleteNetwork',
-                                 content_type='application/json',
-                                 data=jsonutils.dumps(data))
-
-        self.assertEqual(200, response.status_code)
-        decoded_json = jsonutils.loads(response.data)
-        self.assertEqual(SCHEMA['SUCCESS'], decoded_json)
-
     def _mock_out_network(self, docker_network_id):
         fake_neutron_network_id = "4e8e5957-649f-477b-9e5b-f1f75b21c03c"
         fake_list_response = {
@@ -150,6 +115,25 @@ class TestKuryr(base.TestCase):
         app.neutron.list_networks(
             name=docker_network_id).AndReturn(fake_list_response)
         return fake_neutron_network_id
+
+    def test_network_driver_delete_network(self):
+        docker_network_id = hashlib.sha256(
+            str(random.getrandbits(256))).hexdigest()
+
+        fake_neutron_network_id = self._mock_out_network(docker_network_id)
+
+        self.mox.StubOutWithMock(app.neutron, 'delete_network')
+        app.neutron.delete_network(fake_neutron_network_id).AndReturn(None)
+        self.mox.ReplayAll()
+
+        data = {'NetworkID': docker_network_id}
+        response = self.app.post('/NetworkDriver.DeleteNetwork',
+                                 content_type='application/json',
+                                 data=jsonutils.dumps(data))
+
+        self.assertEqual(200, response.status_code)
+        decoded_json = jsonutils.loads(response.data)
+        self.assertEqual(SCHEMA['SUCCESS'], decoded_json)
 
     def test_network_driver_create_endpoint(self):
         docker_network_id = hashlib.sha256(
@@ -255,3 +239,89 @@ class TestKuryr(base.TestCase):
         decoded_json = jsonutils.loads(response.data)
         expected = {'Interfaces': data['Interfaces']}
         self.assertEqual(expected, decoded_json)
+
+    def test_network_driver_delete_endpoint(self):
+        docker_network_id = hashlib.sha256(
+            str(random.getrandbits(256))).hexdigest()
+        docker_endpoint_id = hashlib.sha256(
+            str(random.getrandbits(256))).hexdigest()
+
+        fake_neutron_network_id = self._mock_out_network(docker_network_id)
+
+        fake_subnet_v4_id = "9436e561-47bf-436a-b1f1-fe23a926e031"
+        fake_subnet_v6_id = "64dd4a98-3d7a-4bfd-acf4-91137a8d2f51"
+        # The following fake response is retrieved from the Neutron doc:
+        #   http://developer.openstack.org/api-ref-networking-v2.html#createSubnet  # noqa
+        fake_subnets = {
+            "subnets": [{
+                "name": '-'.join([docker_endpoint_id, '0', 'v4']),
+                "network_id": fake_neutron_network_id,
+                "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
+                "allocation_pools": [{"start": "192.168.1.2",
+                                      "end": "192.168.1.254"}],
+                "gateway_ip": "192.168.1.1",
+                "ip_version": 4,
+                "cidr": "192.168.1.2/24",
+                "id": fake_subnet_v4_id,
+                "enable_dhcp": True
+            }, {
+                "name": '-'.join([docker_endpoint_id, '0', 'v6']),
+                "network_id": fake_neutron_network_id,
+                "tenant_id": "c1210485b2424d48804aad5d39c61b8f",
+                "allocation_pools": [{"start": "fe80::f816:3eff:fe20:57c4",
+                                      "end": "fe80::ffff:ffff:ffff:ffff"}],
+                "gateway_ip": "fe80::f816:3eff:fe20:57c3",
+                "ip_version": 6,
+                "cidr": "fe80::f816:3eff:fe20:57c3/64",
+                "id": fake_subnet_v6_id,
+                "enable_dhcp": True
+            }]
+        }
+        self.mox.StubOutWithMock(app.neutron, 'list_subnets')
+        app.neutron.list_subnets(
+            network_id=fake_neutron_network_id).AndReturn(fake_subnets)
+
+        self.mox.StubOutWithMock(app.neutron, 'delete_subnet')
+        app.neutron.delete_subnet(fake_subnet_v4_id).AndReturn(None)
+        app.neutron.delete_subnet(fake_subnet_v6_id).AndReturn(None)
+
+        fake_neutron_port_id = '65c0ee9f-d634-4522-8954-51021b570b0d'
+        # The following fake response is retrieved from the Neutron doc:
+        #   http://developer.openstack.org/api-ref-networking-v2.html#createPort  # noqa
+        fake_ports = {
+            "ports": [{
+                "status": "DOWN",
+                "name": '-'.join([docker_endpoint_id, '0', 'port']),
+                "allowed_address_pairs": [],
+                "admin_state_up": True,
+                "network_id": fake_neutron_network_id,
+                "tenant_id": "d6700c0c9ffa4f1cb322cd4a1f3906fa",
+                "device_owner": "",
+                "mac_address": "fa:16:3e:20:57:c3",
+                "fixed_ips": [{
+                    "subnet_id": "9436e561-47bf-436a-b1f1-fe23a926e031",
+                    "ip_address": "192.168.1.2"
+                }],
+                "id": fake_neutron_port_id,
+                "security_groups": [],
+                "device_id": ""
+            }]
+        }
+        self.mox.StubOutWithMock(app.neutron, 'list_ports')
+        app.neutron.list_ports(
+            network_id=fake_neutron_network_id).AndReturn(fake_ports)
+        self.mox.StubOutWithMock(app.neutron, 'delete_port')
+        app.neutron.delete_port(fake_neutron_port_id).AndReturn(None)
+        self.mox.ReplayAll()
+
+        data = {
+            'NetworkID': docker_network_id,
+            'EndpointID': docker_endpoint_id,
+        }
+        response = self.app.post('/NetworkDriver.DeleteEndpoint',
+                                 content_type='application/json',
+                                 data=jsonutils.dumps(data))
+
+        self.assertEqual(200, response.status_code)
+        decoded_json = jsonutils.loads(response.data)
+        self.assertEqual(SCHEMA['SUCCESS'], decoded_json)

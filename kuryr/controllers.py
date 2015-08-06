@@ -213,7 +213,57 @@ def network_driver_endpoint_operational_info():
 
 @app.route('/NetworkDriver.DeleteEndpoint', methods=['POST'])
 def network_driver_delete_endpoint():
-    return jsonify(SCHEMA['SUCCESS'])
+    """Deletes Neutron Subnets and a Port with the given EndpointID.
+
+    This function takes the following JSON data and delegates the actual
+    endpoint deletion to the Neutron client mapping it into Subnet and Port. ::
+
+        {
+            "NetworkID": string,
+            "EndpointID": string
+        }
+
+    See the following link for more details about the spec:
+
+      https://github.com/docker/libnetwork/blob/master/docs/remote.md#delete-endpoint  # noqa
+    """
+    json_data = request.get_json(force=True)
+    # TODO(tfukushima): Add a validation of the JSON data for the subnet.
+    app.logger.debug("Received JSON data {0} for /NetworkDriver.DeleteEndpoint"
+                     .format(json_data))
+
+    neutron_network_name = json_data['NetworkID']
+    endpoint_id = json_data['EndpointID']
+
+    filtered_networks = app.neutron.list_networks(name=neutron_network_name)
+
+    if len(filtered_networks) > 1:
+        raise DuplicatedResourceException(
+            "Multiple Neutron Networks exist for NetworkID {0}"
+            .format(neutron_network_name))
+    else:
+        neutron_network_id = filtered_networks['networks'][0]['id']
+
+        filtered_subnets = app.neutron.list_subnets(
+            network_id=neutron_network_id)
+        filtered_subnets = [subnet for subnet in filtered_subnets['subnets']
+                            if endpoint_id in subnet['name']]
+        for subnet in filtered_subnets:
+            app.neutron.delete_subnet(subnet['id'])
+
+        try:
+            filtered_ports = app.neutron.list_ports(
+                network_id=neutron_network_id)
+            filtered_ports = [port for port in filtered_ports['ports']
+                              if endpoint_id in port['name']]
+            for port in filtered_ports:
+                app.neutron.delete_port(port['id'])
+        except NeutronClientException:
+            # Rollback the subnet deletion
+            app.neutron.create_subnet(subnet)
+            raise
+
+        return jsonify(SCHEMA['SUCCESS'])
 
 
 @app.route('/NetworkDriver.Join', methods=['POST'])
