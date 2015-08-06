@@ -14,6 +14,7 @@ import os
 
 from flask import jsonify
 from flask import request
+from neutronclient.common.exceptions import NeutronClientException
 from neutronclient.neutron import client
 
 from kuryr import app
@@ -112,7 +113,97 @@ def network_driver_delete_network():
 
 @app.route('/NetworkDriver.CreateEndpoint', methods=['POST'])
 def network_driver_create_endpoint():
-    return jsonify(SCHEMA['CREATE_ENDPOINT'])
+    """Creates new Neutron Subnets and a Port with the given EndpointID.
+
+    This function takes the following JSON data and delegates the actual
+    endpoint creation to the Neutron client mapping it into Subnet and Port. ::
+
+        {
+            "NetworkID": string,
+            "EndpointID": string,
+            "Options": {
+                ...
+            },
+            "Interfaces": [{
+                "ID": int,
+                "Address": string,
+                "AddressIPv6": string,
+                "MacAddress": string
+            }, ...]
+        }
+
+    See the following link for more details about the spec:
+
+      https://github.com/docker/libnetwork/blob/master/docs/remote.md#create-endpoint  # noqa
+    """
+    json_data = request.get_json(force=True)
+
+    app.logger.debug("Received JSON data {0} for /NetworkDriver.CreateEndpoint"
+                     .format(json_data))
+    # TODO(tfukushima): Add a validation of the JSON data for the subnet.
+    neutron_network_name = json_data['NetworkID']
+    endpoint_id = json_data['EndpointID']
+
+    filtered_networks = app.neutron.list_networks(name=neutron_network_name)
+
+    if len(filtered_networks) > 1:
+        raise DuplicatedResourceException(
+            "Multiple Neutron Networks exist for NetworkID {0}"
+            .format(neutron_network_name))
+    else:
+        neutron_network_id = filtered_networks['networks'][0]['id']
+
+        interfaces = json_data['Interfaces']
+
+        response_interfaces = []
+
+        for interface in interfaces:
+            # v4 and v6 Subnets for bulk creation.
+            subnets = []
+
+            interface_id = interface['ID']
+            interface_ipv4 = interface.get('Address', '')
+            interface_ipv6 = interface.get('AddressIPv6', '')
+            interface_mac = interface['MacAddress']
+            if interface_ipv4:
+                subnets.append({
+                    'name': '-'.join([endpoint_id, str(interface_id), 'v4']),
+                    'network_id': neutron_network_id,
+                    'ip_version': 4,
+                    'cidr': interface_ipv4,
+                })
+            if interface_ipv6:
+                subnets.append({
+                    'name': '-'.join([endpoint_id, str(interface_id), 'v6']),
+                    'network_id': neutron_network_id,
+                    'ip_version': 6,
+                    'cidr': interface_ipv6,
+                })
+            # Bulk create operation of subnets
+            created_subnets = app.neutron.create_subnet({'subnets': subnets})
+
+            try:
+                port = {
+                    'name': '-'.join([endpoint_id, str(interface_id), 'port']),
+                    'admin_state_up': True,
+                    'mac_address': interface_mac,
+                    'network_id': neutron_network_id,
+                }
+                app.neutron.create_port({'port': port})
+
+                response_interfaces.append({
+                    'ID': interface_id,
+                    'Address': interface_ipv4,
+                    'AddressIPv6': interface_ipv6,
+                    'MacAddress': interface_mac
+                })
+            except NeutronClientException:
+                # Rollback the subnets creation
+                for subnet in created_subnets['subnets']:
+                    app.neutron.delete_subnet(subnet['id'])
+                raise
+
+        return jsonify({'Interfaces': response_interfaces})
 
 
 @app.route('/NetworkDriver.EndpointOperInfo', methods=['POST'])
