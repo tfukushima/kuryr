@@ -12,6 +12,8 @@
 
 import os
 
+import docker
+from docker.utils import check_resource
 from flask import jsonify
 from flask import request
 from neutronclient.common.exceptions import NeutronClientException
@@ -28,6 +30,26 @@ OS_TOKEN = os.environ.get('OS_TOKEN', '9999888877776666')
 # TODO(tfukushima): Retrieve configuration info from a config file.
 app.neutron = client.Client('2.0', endpoint_url=OS_URL, token=OS_TOKEN)
 app.neutron.format = 'json'
+
+
+class ExtendedDockerClient(docker.Client):
+    @check_resource
+    def inspect_network(self, network):
+        return self._result(self._get(
+            self._url("/networks/{0}".format(network))), True)
+
+    @check_resource
+    def inspect_service(self, service):
+        return self._result(self._get(
+            self._url("/services/{0}".format(service))), True)
+
+    @check_resource
+    def inspect_service_backend(self, service):
+        return self._result(self._get(
+            self._url("/services/{0}/backend".format(service))), True)
+
+
+app.docker = ExtendedDockerClient(base_url='unix:///var/run/docker.sock')
 
 
 @app.route('/Plugin.Activate', methods=['POST'])
@@ -60,6 +82,9 @@ def network_driver_create_network():
                      .format(json_data))
     # TODO(tfukushima): Add a validation of the JSON data for the network.
     neutron_network_name = json_data['NetworkID']
+
+    r = app.docker.inspect_network(neutron_network_name)
+    app.logger.info("Network info from the Docker daemon: {0}".format(r))
 
     network = app.neutron.create_network(
         {'network': {'name': neutron_network_name, "admin_state_up": True}})
